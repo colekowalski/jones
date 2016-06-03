@@ -16,11 +16,11 @@ limitations under the License.
 
 from setuptools import setup
 
-VERSION = '0.6.0.1'
+VERSION = '1.0.0'
 NAME = 'jones'
 
 install_requires = [
-    'kazoo>=0.5',
+    'kazoo==1.2.1',
     'raven>=3.3.2',
     'markdown',
     'pygments',

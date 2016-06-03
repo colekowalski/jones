@@ -1,6 +1,4 @@
 /*
-Copyright 2012 DISQUS
-
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -18,6 +16,7 @@ limitations under the License.
 $(function() {
     window.editor = new JSONEditor($('#jsoneditor')[0]);
     window.editor.set(config);
+
     $('#update').click(function() {
         $.ajax({
             url: window.location.href,
@@ -35,13 +34,22 @@ $(function() {
     $('.add-env').click(function() {
       var form = $('#addChildModal form');
       var env = $(this).data('env');
+      var env_components = _.reject(env.split('/'), _.isEmpty)
 
       $('#addChildModal .modal-header h4').text(env);
       $('#addChildModal').modal();
 
-      $('input', form).focus();
-      $(form).submit(function() {
-        $(this).attr('action', env + '/' + $('input', this).val());
+      $('input', form).bind(
+        "propertychange keyup input paste", function(event){
+          validate(env_components, $(this).val(), function(path) {
+            $('#addChildModal .modal-header h4').text(path);
+          });
+      });
+
+      form.submit(function() {
+        return validate(env_components, $('input', this).val(), function(path) {
+          form.attr('action', path);
+        });
       });
 
       return false;
@@ -66,39 +74,40 @@ $(function() {
     });
 
     $("#associations > .btn").click(function() {
+      // AJAX here because of the http semantics.
         $(this).hide();
 
-        $('#add-assoc').show();
+        $('#add-assoc').removeClass('hidden');
         $('#add-assoc .btn').click(function() {
-            var href = '/service/' + service;
-            href += '/association/' + $('#add-assoc input').val();
-
-            $(this).button('loading');
-
-            $.ajax({
-              url: href,
-              data: {env: env},
-              type: 'put',
-              success: function() {
-                window.location.reload(true);
-              }
+          validate('service', service, 'association',
+            $('#add-assoc input').val(), function(path) {
+              $(this).button('loading');
+              $.ajax({
+                url: path.slice(0,-1),
+                data: {env: env},
+                type: 'put',
+                success: function() {
+                  window.location.reload(true);
+                }
+              });
             });
         });
         return false;
     });
 
     $('#associations .del-assoc').click(function() {
-      $(this).button('loading');
-      var href = '/service/' + service;
-      href += '/association/' + $(this).data('hostname');
+      validate('service', service, 'association',
+        $(this).data('hostname'), function(path) {
+          $(this).button('loading');
 
-      $.ajax({
-        url: href,
-        type: 'delete',
-        success: function(data) {
-          window.location.reload(true);
-        }
-      });
+          $.ajax({
+            url: path.slice(0, -1),
+            type: 'delete',
+            success: function(data) {
+              window.location.reload(true);
+            }
+          });
+        });
       return false;
     });
 

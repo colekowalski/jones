@@ -1,32 +1,59 @@
-jones
-=====
+# jones
+
 [![travis][2]][1]
 
 Jones is a configuration frontend for Zookeeper.
 
-Goals
------
+## Goals
 
    * Clients MUST only talk to zookeeper
    * Accessing configuration MUST be simple (i.e. no computation)
    * Unique views of the config must be available on a host-by-host basis
 
-Introduction
-------------
+## Introduction
 
-At their root, most configuration systems are a hierarchy of dictionaries. The root has config common to all environments,
-with config specific to say, developers or a staging area, inheriting and overriding values. Jones takes this idea and
-maps it to Zookeeper.
+At their root, most configuration systems are a hierarchy of dictionaries. The
+root has config common to all environments, with config specific to say,
+developers or a staging area, inheriting and overriding values. Jones takes
+this idea and maps it to Zookeeper.
 
-Zookeeper is the ideal place for configuration. Besides its availability guarantees, it's also able to update observers
-when data changes. Now we can change config at runtime, making possible a whole category of use-cases like switches, a/b
-tests, and knob and lever you can imagine.
+Zookeeper is the ideal place for configuration. Besides it's availability
+guarantees, it's also able to update observers when data changes. Now we can
+change config at runtime, making possible a whole category of use-cases like
+switches, a/b tests, and knob and lever you can imagine.
 
-Using the client
-----------------
+For more information, see my
+[talk](http://pyvideo.org/video/1567/configuration-management-with-zookeeper)
+and [presentation](https://speakerdeck.com/mwhooker/jones) at Pycon Canada.
 
-Jones comes with an example client, which we hope will serve the most general case.
-It's also incredibly simple (only 30 lines), so it should be easy to customize. Using it is just as straight-forward.
+## Running the Server
+
+Jones uses the [Flask](http://flask.pocoo.org/) web framework. For development,
+running the server is as simple as `python jones/web.py`.
+
+For running in production, I recommend using [Gunicorn](http://gunicorn.org/)
+with an http frontend like nginx or apache. Gunicorn can run Jones with
+`gunicorn jones.web:app`. For more information on running gunicorn see [Running
+Gunicorn](http://docs.gunicorn.org/en/latest/run.html). For help on deploying
+gunicorn with nginx, see [Deploying
+Gunicorn](http://docs.gunicorn.org/en/latest/deploy.html)
+
+### Configuring
+
+Jones uses [Flask's configuration
+handling](http://flask.pocoo.org/docs/config/). It comes wsith a [default
+config](https://github.com/mwhooker/jones/blob/master/jones/jonesconfig.py)
+which should modified before running the server.
+
+You can override it by creating your own config with the right values plugged
+in, and setting the environmental variable JONES_SETTINGS to the path to that
+file.
+
+## Using the client
+
+Jones comes with an example client, which we hope will serve the most general
+case.  It's also incredibly simple (only 30 lines), so it should be easy to
+customize. Using it is just as straight-forward.
 
 **Install:**
 
@@ -56,50 +83,53 @@ The JonesClient object also takes an optional callback and association.
     - A key in the _associations_ map. By default JonesClient uses `socket.getfqdn()`.
 
 
-Design
-------
+## Design
 
-Environments are stored under their parent znodes on the zookeeper data tree. On write, the view algorithm is used to
-materialize the "inherited" config in a view node.
+Environments are stored under their parent znodes on the zookeeper data tree.
+On write, the view algorithm is used to materialize the "inherited" config in
+a view node.
 
-Jones takes advantage of zookeeper's mvcc capabilities where possible. An environment will never have its data clobbered
-by a concurrent write. When updating a view, however, the last write wins. This may cause view data to be clobbered if
-concurrent writes are made to two nodes in the same path and Jones happens to lose its session in between (see issue #1).
+Jones takes advantage of zookeeper's mvcc capabilities where possible. An
+environment will never have its data clobbered by a concurrent write. When
+updating a view, however, the last write wins. This may cause view data to be
+clobbered if concurrent writes are made to two nodes in the same path and Jones
+happens to lose its session in between (see issue #1).
 
 Associations are a simple key to env map, stored under /nodemaps.
 
 Example data tree dump. This shows data for an example service:
 
 ```
+/
 /services
-  /testservice
-    /conf
-      foo = u'bar'
-      /parent
-        a = 1
-        b = [1, 2, 3]
-        c = {u'x': 0}
-        /child1
-          a = 2
-    /nodemaps
-      127.0.0.1 -> /services/testservice/views/parent
-      127.0.0.2 -> /services/testservice/views/parent/child1
-    /views
-      foo = u'bar'
-      /parent
-        a = 1
-        b = [1, 2, 3]
-        c = {u'x': 0}
-        foo = u'bar'
-        /child1
-          a = 2
-          b = [1, 2, 3]
-          c = {u'x': 0}
-          foo = u'bar'
+ /services/test
+    /services/test/nodemaps
+      {"example": "/services/test/views/child1/sib"}
+    /services/test/conf
+      {"foo": "bar", "fiesasld": "value31"}
+      /services/test/conf/child1
+        {"field": "HAILSATAN"}
+        /services/test/conf/child1/sib
+          {"foo": "big"}
+        /services/test/conf/child1/baby
+          {"foo": "baz"}
+    /services/test/views
+      {"foo": "bar", "fiesasld": "value31"}
+      /services/test/views/child1
+        {"field": "HAILSATAN", "foo": "bar", "fiesasld": "value31"}
+        /services/test/views/child1/sib
+          {"field": "HAILSATAN", "foo": "big", "fiesasld": "value31"}
+        /services/test/views/child1/baby
+          {"field": "HAILSATAN", "foo": "baz", "fiesasld": "value31"}
+  /services/test2
+    /services/test2/nodemaps
+    /services/test2/conf
+      {}
+    /services/test2/views
+      {}
 ```
 
-Glossary
---------
+## Glossary
 
 
 - Config Tree
@@ -118,8 +148,42 @@ Glossary
   </dd>
 
 
-Screenshot
-----------
+## Changelog
+
+Jones uses [Semantic Versioning](http://semver.org/).
+
+> Given a version number MAJOR.MINOR.PATCH, increment the:
+
+> MAJOR version when you make incompatible API changes,
+MINOR version when you add functionality in a backwards-compatible manner, and
+PATCH version when you make backwards-compatible bug fixes.  Additional labels
+for pre-release and build metadata are available as extensions to the
+MAJOR.MINOR.PATCH format.
+
+### About Versioning
+
+Only the python client is packaged and available on pypi. Thus, the version
+number only applies to changes to the client. We intend that the web server be
+checked out of version control, and leave it up to the user to decide which
+version to use. We'll try to make sure the server and clients maintain back and
+forwards compatibility. This may be a mistake, but since the client and server
+are essentially frozen at this point, we'll leave it as it is for now. If
+we make any changes impacing bc/fc, we'll have to revisit this.
+
+
+### 0.7.0
+
+   * Upgraded to Bootstrap 3.0rc1
+   * Turned the loosely defined `env` into a type
+   * Fixed numerous bugs and style issues
+
+### 1.0.0
+
+   * Updated Kazoo to 1.12.1
+   * Rewrote the ZKNodeMap class to serialize to json instead of the legacy format.
+      * the code is smart enough to update the map format on the fly, but I advise you to test on your set up, first.
+
+## Screenshot
 ![Example](http://mwhooker.github.com/jones/docs/img/testservice.png)
 
   [1]: https://travis-ci.org/mwhooker/jones

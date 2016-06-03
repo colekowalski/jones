@@ -1,6 +1,4 @@
 """
-Copyright 2012 DISQUS
-
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -14,9 +12,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+from functools import partial
 import collections
 import json
-from functools import partial
 import zkutil
 import logging
 
@@ -26,7 +24,7 @@ logger = logging.getLogger()
 class ZNodeMap(object):
     """Associate znodes with names."""
 
-    SEPARATOR = ' -> '
+    OLD_SEPARATOR = ' -> '
 
     def __init__(self, zk, path):
         """
@@ -61,22 +59,54 @@ class ZNodeMap(object):
     def _get(self):
         """get and parse data stored in self.path."""
 
-        def _deserialize(d):
-            if not len(d):
-                return {}
-            return dict(l.split(self.SEPARATOR) for l in d.split('\n'))
-
         data, stat = self.zk.get(self.path)
-        return _deserialize(data.decode('utf8')), stat.version
+        if not len(data):
+            return {}, stat.version
+        if self.OLD_SEPARATOR in data:
+            return self._get_old()
+        return json.loads(data), stat.version
 
     def _set(self, data, version):
         """serialize and set data to self.path."""
 
-        def _serialize(d):
-            return '\n'.join(self.SEPARATOR.join((k, d[k])) for k in d)
+        self.zk.set(self.path, json.dumps(data), version)
 
-        self.zk.set(self.path, _serialize(data).encode('utf8'), version)
-        logger.info('set new data at %(path)s with %(version)s', extra={'path': self.path, 'data': data, 'version': str(version), 'notify': True})
+    def _get_old(self):
+        """get and parse data stored in self.path."""
+
+        def _deserialize(d):
+            if not len(d):
+                return {}
+            return dict(l.split(self.OLD_SEPARATOR) for l in d.split('\n'))
+
+        data, stat = self.zk.get(self.path)
+        return _deserialize(data.decode('utf8')), stat.version
+
+
+class Env(unicode):
+    def __new__(cls, name):
+        if not name:
+            empty = True
+            name = ''
+        else:
+            assert name[0] != '/'
+            empty = False
+        s = unicode.__new__(cls, name)
+        s._empty = empty
+        return s
+
+    @property
+    def is_root(self):
+        return self._empty
+
+    @property
+    def components(self):
+        if self.is_root:
+            return ['']
+        else:
+            return self.split('/')
+
+Env.Root = Env(None)
 
 
 class Jones(object):
@@ -139,18 +169,10 @@ class Jones(object):
             conf,
             version
         )
-
-        def propogate(src):
-            """Update env's children with new config."""
-
-            self._update_view(src)
-            path = self._get_env_path(src)
-            for child in self.zk.get_children(path):
-                if src:
-                    child = "%s/%s" % (src, child)
-                propogate(child)
-
-        propogate(env)
+        path = self._get_env_path(env)
+        """Update env's children with new config."""
+        for child in zkutil.walk(self.zk, path):
+            self._update_view(Env(child[len(self.conf_path)+1:]))
 
     def delete_config(self, env, version):
         self.zk.delete(
@@ -204,7 +226,7 @@ class Jones(object):
         dest = self._get_view_path(env)
         self.associations.set(hostname, dest)
 
-    def get_associations(self, env=None):
+    def get_associations(self, env):
         """
         Get all the associations for this env.
 
@@ -213,10 +235,10 @@ class Jones(object):
         returns a map of hostnames to environments.
         """
 
-        associations = self.associations.get_all()
-
-        if not env:
+        if env.is_root:
             return None
+
+        associations = self.associations.get_all()
         return [assoc for assoc in associations
                 if associations[assoc] == self._get_view_path(env)]
 
@@ -227,24 +249,24 @@ class Jones(object):
         """Does this service exist in zookeeper"""
 
         return self.zk.exists(
-            self._get_env_path(None)
+            self._get_env_path(Env.Root)
         )
 
     def delete_all(self):
         self.zk.delete(self.root, recursive=True)
         logger.info('removed all under path %(path)s', extra={'path': self.root, 'notify': True})
 
-    def get_child_envs(self, env=None):
+    def get_child_envs(self, env):
         prefix = self._get_env_path(env)
         envs = zkutil.walk(self.zk, prefix)
-        return map(lambda e: e[len(prefix):], envs)
+        return map(lambda e: e[len(prefix)+1:], envs)
 
-    def _flatten_to_root(self, env):
+    def _flatten_from_root(self, env):
         """
         Flatten values from root down in to new view.
         """
 
-        nodes = env.split('/')
+        nodes = env.components
 
         # Path through the znode graph from root ('') to env
         path = [nodes[:n] for n in xrange(len(nodes) + 1)]
@@ -252,7 +274,7 @@ class Jones(object):
         # Expand path and map it to the root
         path = map(
             self._get_env_path,
-            ['/'.join(p) for p in path]
+            [Env('/'.join(p)) for p in path]
         )
 
         data = {}
@@ -263,19 +285,16 @@ class Jones(object):
         return data
 
     def _update_view(self, env):
-        if not env:
-            env = ''
 
         dest = self._get_view_path(env)
         if not self.zk.exists(dest):
             self.zk.ensure_path(dest)
 
-        self._set(dest, self._flatten_to_root(env))
+        self._set(dest, self._flatten_from_root(env))
 
     def _get_path_by_env(self, prefix, env):
-        if not env:
+        if env.is_root:
             return prefix
-        assert env[0] != '/'
         return '/'.join((prefix, env))
 
     def _get_nodemap_path(self, hostname):

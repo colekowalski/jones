@@ -1,6 +1,4 @@
 """
-Copyright 2012 DISQUS
-
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -16,16 +14,16 @@ limitations under the License.
 
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
-from raven.contrib.flask import Sentry
-from werkzeug.contrib.fixers import ProxyFix
+from itertools import repeat, izip, imap
 from jinja2 import Markup
-from kazoo.security import make_acl, make_digest_acl_credential
 from kazoo.client import KazooClient
 from kazoo.exceptions import NoNodeException
-from itertools import repeat, izip, imap
+from kazoo.security import make_acl, make_digest_acl_credential
+from raven.contrib.flask import Sentry
+from werkzeug.contrib.fixers import ProxyFix
 import json
 
-from jones import Jones
+from jones import Jones, Env
 import zkutil
 import jonesconfig
 
@@ -41,18 +39,31 @@ if 'SENTRY_DSN' in app.config:
 jones_credential = make_digest_acl_credential(
     'Jones', app.config['ZK_DIGEST_PASSWORD']
 )
-zk = KazooClient(
-    app.config['ZK_CONNECTION_STRING'],
-    default_acl=(
-        # grants read permissions to anyone.
-        make_acl('world', 'anyone', read=True),
-        # grants all permissions to the creator of the node.
-        make_acl('auth', '', all=True)
-    )
-)
-zk.start()
-zk.add_auth('digest', jones_credential)
-zk.ensure_path('/services')
+
+_zk = None
+
+
+def get_zk():
+    global _zk
+    if _zk is None:
+        _zk = KazooClient(
+            app.config['ZK_CONNECTION_STRING'],
+            default_acl=(
+                # grants read permissions to anyone.
+                make_acl('world', 'anyone', read=True),
+                # grants all permissions to the creator of the node.
+                make_acl('auth', '', all=True)
+            )
+        )
+        _zk.start()
+        _zk.add_auth('digest', jones_credential)
+        _zk.DataWatch('/services', func=ensure_root)
+    return _zk
+
+
+def ensure_root(data, stat):
+    if not data:
+        get_zk().ensure_path('/services')
 
 
 def request_wants(t):
@@ -70,13 +81,13 @@ def as_json(d, indent=None):
 
 @app.context_processor
 def inject_services():
-    return dict(services=[child for child in zk.get_children('/services') if
-                          Jones(child, zk).exists()])
+    return dict(services=[child for child in get_zk().get_children('/services') if
+                          Jones(child, get_zk()).exists()])
 
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.j2')
 
 
 def service_create(env, jones):
@@ -87,7 +98,11 @@ def service_create(env, jones):
         r.status_code = 201
         return r
     else:
-        return redirect(url_for('service', service=jones.service, env=env))
+        if env.is_root:
+            env = None
+
+        return redirect(url_for(
+            'services', service=jones.service, env=env))
 
 
 def service_update(env, jones):
@@ -96,11 +111,11 @@ def service_update(env, jones):
         json.loads(request.form['data']),
         int(request.form['version'])
     )
-    return env or ''
+    return env
 
 
 def service_delete(env, jones):
-    if not env:
+    if env.is_root:
         # deleting whole service
         jones.delete_all()
         #return redirect(url_for('index'))
@@ -113,23 +128,21 @@ def service_get(env, jones):
     if not jones.exists():
         return redirect(url_for('index'))
 
-    children = jones.get_child_envs()
-    is_leaf = lambda child: not any(
-        [c.find(child + '/') >= 0 for c in children])
+    children = jones.get_child_envs(Env.Root)
+    is_leaf = lambda child: len(child) and not any(
+        c.find(child + '/') >= 0 for c in children)
 
     try:
         version, config = jones.get_config_by_env(env)
     except NoNodeException:
-        return redirect(url_for('service', service=jones.service))
+        return redirect(url_for('services', service=jones.service))
 
     childs = imap(dict, izip(
-        izip(repeat('env'),
-            imap(lambda env: env if len(env) else "/",
-                children)),
+        izip(repeat('env'), imap(Env, children)),
         izip(repeat('is_leaf'), imap(is_leaf, children))))
 
     vals = {
-        "env": env or '',
+        "env": env,
         "version": version,
         "children": list(childs),
         "config": config,
@@ -140,7 +153,7 @@ def service_get(env, jones):
     if request_wants('application/json'):
         return jsonify(vals)
     else:
-        return render_template('service.html', **vals)
+        return render_template('service.j2', **vals)
 
 
 SERVICE = {
@@ -153,26 +166,26 @@ SERVICE = {
 ALL_METHODS = ['GET', 'PUT', 'POST', 'DELETE']
 
 
-@app.route('/service/<string:service>', defaults={'env': None},
+@app.route('/service/<string:service>/', defaults={'env': None},
            methods=ALL_METHODS)
-@app.route('/service/<string:service>/<path:env>', methods=ALL_METHODS)
-def service(service, env):
-    jones = Jones(service, zk)
+@app.route('/service/<string:service>/<path:env>/', methods=ALL_METHODS)
+def services(service, env):
+    jones = Jones(service, get_zk())
+    environment = Env(env)
 
-    return SERVICE[request.method.lower()](env, jones)
+    return SERVICE[request.method.lower()](environment, jones)
 
 
-# TODO: what if we have a path called association?
 @app.route('/service/<string:service>/association/<string:assoc>',
            methods=['GET', 'PUT', 'DELETE'])
 def association(service, assoc):
-    jones = Jones(service, zk)
+    jones = Jones(service, get_zk())
 
     if request.method == 'GET':
         if request_wants('application/json'):
             return jsonify(jones.get_config(assoc))
     if request.method == 'PUT':
-        jones.assoc_host(assoc, request.form['env'])
+        jones.assoc_host(assoc, Env(request.form['env']))
         return service, 201
     elif request.method == 'DELETE':
         jones.delete_association(assoc)
@@ -181,7 +194,7 @@ def association(service, assoc):
 
 @app.route('/export')
 def export():
-    return zkutil.export_tree(zk, '/')
+    return zkutil.export_tree(get_zk(), '/')
 
 
 if __name__ == '__main__':

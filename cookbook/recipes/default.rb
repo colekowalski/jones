@@ -19,8 +19,11 @@
 
 include_recipe "gunicorn"
 include_recipe "nginx"
-chef_gem "zookeeper"
+include_recipe "supervisor"
 package "libevent-dev"
+
+node.override['nginx']['default_site_enabled'] = false
+node.override['nginx_conf']['pre_socket'] = 'http://'
 
 user node[:jones][:user] do
   uid node[:jones][:uid]
@@ -34,22 +37,6 @@ directory node[:jones][:destination] do
 end
 
 config_path = "#{node[:jones][:destination]}/shared/jonesconfig.py"
-
-if node[:exhibitor][:hostname].is_a? String
-  zk_connect_str = zk_connect_str(
-    discover_zookeepers(node[:exhibitor][:hostname]),
-    node[:jones][:zk_chroot])
-elsif node[:jones][:zk_connect].is_a? String
-  zk_connect_str = node[:jones][:zk_connect]
-else
-  raise "please either specify exhibitor hostname or zk connection string."
-end
-
-zookeeper_node '/' do
-  action :create_if_missing
-  connect_str zk_connect_str
-end
-
 venv = "#{node[:jones][:destination]}/shared/env"
 
 python_virtualenv venv do
@@ -77,7 +64,6 @@ application "jones" do
     app_module "jones.web:app"
     virtualenv venv
   end
-
 end
 
 template config_path do
@@ -85,12 +71,17 @@ template config_path do
   owner "root"
   group "root"
   mode "0644"
-  # TODO
-  # notifies :restart, "supervisor_service[jones]"
   variables(
     :config => node[:jones][:config],
-    :zk_connect_str => zk_connect_str
+    :zk_connect_str => zk_connect_str(
+      discover_zookeepers(node[:exhibitor][:hostname]),
+      node[:jones][:zk_chroot])
   )
+end
+
+supervisor_service "jones" do
+  subscribes :before_deploy, "application[jones]"
+  action :start
 end
 
 nginx_conf_file "jones" do
