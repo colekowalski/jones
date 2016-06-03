@@ -12,16 +12,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-import logging_config
-logging_config.configure()
-
 import os
+import logging_config
+
 
 _basedir = os.path.abspath(os.path.dirname(__file__))
 
-DEBUG = True
-TESTING = True
-SECRET_KEY = 'developement key'
-ZK_CONNECTION_STRING = '127.0.0.1:2181'
-ZK_DIGEST_PASSWORD = 'changeme'
+DEBUG = os.environ.get('DEBUG', False)
+TESTING = os.environ.get('TESTING', False)
+SECRET_KEY = os.environ.get('SECRET_KEY', 'developement key')
+ZK_CONNECTION_STRING = os.environ.get('ZK_CONNECTION_STRING', '127.0.0.1:2181')
+ZK_DIGEST_PASSWORD = os.environ.get('ZK_DIGEST_PASSWORD', 'changeme')
+SMTP_HOST = os.environ.get('SMTP_HOST', 'localhost')
+SMTP_PORT = os.environ.get('SMTP_PORT', 25)
 
+# override the mail host in the logging configuration
+handlers = logging_config.config.get('handlers')
+handlers['mail']['mailhost'] = [SMTP_HOST, SMTP_PORT]
+logging_config.configure({
+    'handlers': handlers
+})
